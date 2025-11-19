@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Big Calculator (Web) — Frontend Version</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* (kept and lightly adapted from your original CSS) */
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f9fafb;color:#111827;padding:2rem}
+  .container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;padding:2rem;box-shadow:0 6px 18px rgba(0,0,0,.06)}
+  h1{font-size:2rem;margin-bottom:.5rem}
+  .hint{color:#6b7280;margin-bottom:1.2rem}
+  form{margin-top:1rem}
+  .mode-toggle{display:flex;gap:.75rem;margin-bottom:1rem}
+  .mode-toggle label{position:relative}
+  .mode-toggle input[type=radio]{opacity:0;position:absolute;width:0;height:0}
+  .radio-label-content{display:block;padding:.5rem 1.2rem;border:1px solid #d1d5db;border-radius:.5rem;cursor:pointer;font-weight:500;background:#fff}
+  .mode-toggle input[type=radio]:checked + .radio-label-content{background:#ebf4ff;border-color:#3b82f6;color:#2563eb;box-shadow:0 0 0 2px rgba(59,130,246,.14)}
+  textarea{width:100%;font-family:SFMono-Regular,Consolas,Menlo,monospace;padding:.75rem 1rem;border:1px solid #d1d5db;border-radius:.5rem;margin-bottom:1rem;resize:vertical}
+  button[type=button]{font-weight:600;color:#fff;background:#3b82f6;border:none;padding:.6rem 1.25rem;border-radius:.5rem;cursor:pointer}
+  pre{background:#f3f4f6;border:1px solid #e5e7eb;padding:1rem;border-radius:.5rem;white-space:pre-wrap;font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:.9rem}
+  @media(max-width:640px){body{padding:1rem}.container{padding:1.2rem}.mode-toggle{flex-direction:column}}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>Big Calculator (Web)</h1>
+    <p class="hint">
+      Choose output mode, enter one expression per line (supports assignments and semicolons). Example: <code>a=5; b=3; a+b</code>
+    </p>
+
+    <form id="calcForm" onsubmit="return false;">
+      <div class="mode-toggle">
+        <label><input type="radio" name="output_mode" value="fraction" id="modeFraction" checked> <span class="radio-label-content">Fraction</span></label>
+        <label><input type="radio" name="output_mode" value="float" id="modeFloat"> <span class="radio-label-content">Float</span></label>
+      </div>
+
+      <textarea id="inputs" rows="8" placeholder="Enter expressions here, one per line...">a = 5; b = 3; a+b</textarea><br>
+      <button type="button" id="runBtn">Run Calculator</button>
+      <button type="button" id="clearBtn" style="margin-left:.5rem;background:#6b7280">Clear Output</button>
+    </form>
+
+    <h2 style="margin-top:1.25rem">Output</h2>
+    <pre id="outputArea">(results will appear here)</pre>
+  </div>
+
+<script>
+/*
+  Full frontend port of calc_logic.py
+  - Fraction class (basic arithmetic, normalization, limitDenominator approximation)
+  - All major helper functions ported and adapted to JS
+  - runCalculator(mode, lines) returns text output
+*/
+
+/* ================= Fraction class ================= */
+class Fraction {
+  constructor(n, d=1) {
+    if (d === 0) throw new Error("Denominator 0");
+    if (n instanceof Fraction) { this.n = n.n; this.d = n.d; return; }
+    n = Math.trunc(n);
+    d = Math.trunc(d);
+    if (d < 0) { n = -n; d = -d; }
+    const g = Fraction.gcd(Math.abs(n), Math.abs(d));
+    this.n = Math.trunc(n / g);
+    this.d = Math.trunc(d / g);
+  }
+
+  static fromFloat(x, maxDen=1000000) {
+    // Convert float to fraction by continued fraction (simple)
+    if (!isFinite(x)) throw new Error("Non-finite");
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x);
+    if (Math.abs(x - Math.round(x)) < 1e-12) return new Fraction(sign*Math.round(x), 1);
+    let a = Math.floor(x);
+    let h1=1, k1=0, h=a, k=1;
+    let frac = x - a;
+    let iter = 0;
+    while (Math.abs(x - h/k) > 1e-12 && k <= maxDen && iter < 50) {
+      iter++;
+      if (frac === 0) break;
+      x = 1/frac;
+      a = Math.floor(x);
+      const h2 = a*h + h1;
+      const k2 = a*k + k1;
+      h1 = h; k1 = k;
+      h = h2; k = k2;
+      frac = x - a;
+    }
+    return new Fraction(sign*h, k);
+  }
+
+  static gcd(a,b){ while(b){[a,b]=[b,a%b]} return a; }
+
+  add(o){ o = Fraction.cast(o); return new Fraction(this.n*o.d + o.n*this.d, this.d*o.d); }
+  sub(o){ o = Fraction.cast(o); return new Fraction(this.n*o.d - o.n*this.d, this.d*o.d); }
+  mul(o){ o = Fraction.cast(o); return new Fraction(this.n*o.n, this.d*o.d); }
+  div(o){ o = Fraction.cast(o); if(o.n===0) throw new Error("Divide by zero"); return new Fraction(this.n*o.d, this.d*o.n); }
+  eq(o){ o = Fraction.cast(o); return this.n*o.d === o.n*this.d; }
+  valueOf(){ return this.n / this.d; }
+  toString(){ if (this.d===1) return String(this.n); return `${this.n}/${this.d}`; }
+  limitDenominator(maxDen=1000000) {
+    // Attempt to approximate to smaller denominator (use continued-fraction)
+    return Fraction.fromFloat(this.valueOf(), maxDen);
+  }
+
+  static cast(x){
+    if (x instanceof Fraction) return x;
+    if (typeof x === 'number') return new Fraction(Math.round(x*1000000), 1000000).limitDenominator(1000000);
+    if (typeof x === 'string') {
+      if (x.includes('/')) {
+        const parts = x.split('/');
+        return new Fraction(parseInt(parts[0]), parseInt(parts[1]));
+      } else {
+        // integer string
+        return new Fraction(parseInt(x), 1);
+      }
+    }
+    throw new Error("Cannot cast to Fraction: " + x);
+  }
+}
+
+/* ============== Utility helpers ============== */
+
+/** sanitizeNumericExpr:
+ *  allow only digits, + - * / . and parentheses in numeric eval
+ *  returns either evaluated number or null on invalid
+ */
+function sanitizeAndEvalNumeric(expr) {
+  expr = expr.replace(/\s+/g,'');
+  // allowed characters: digits, + - * / . ( ) and parentheses
+  if (!/^[0-9+\-*/().]+$/.test(expr)) return null;
+  try {
+    // Use Function instead of eval for slightly safer execution
+    // We still only allow numeric tokens by the regex
+    const val = Function('"use strict"; return ('+expr+');')();
+    if (typeof val !== 'number' || !isFinite(val)) return null;
+    return val;
+  } catch(e){
+    return null;
+  }
+}
+
+/* Convert mixed numbers "4 1/2" -> "(4+(1/2))" */
+function convertMixedNumbers(expr) {
+  return expr.replace(/(\d+)\s+(\d+\/\d+)/g, (m, w, f) => `(${w}+(${f}))`);
+}
+
+/* Convert percentage occurrences: X% of Y  or X% Y -> ((X/100)*Y)
+   Only replace first occurrence per call to mirror Python behavior.
+   Returns [newExpr, changedBoolean]
+*/
+function convertPercentagesInExpr(expr) {
+  const pattern = /(\b-?\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?\s*(\b-?\d+(?:\.\d+)?\b)/;
+  const m = expr.match(pattern);
+  if (!m) return [expr, false];
+  const percent_val = m[1], base_val = m[2];
+  const repl = `(((${percent_val})/100)*(${base_val}))`;
+  return [expr.replace(pattern, repl), true];
+}
+
+/* Split on top-level '=' (not inside any brackets) */
+function splitTopLevelEquation(expr) {
+  let level=0;
+  for (let i=0;i<expr.length;i++){
+    const ch = expr[i];
+    if (ch==='('||ch==='['||ch==='{') level++;
+    else if (ch===')'||ch===']'||ch==='}') level--;
+    else if (ch==='=' && level===0) return [expr.slice(0,i), expr.slice(i+1)];
+  }
+  return null;
+}
+
+/* Print step: we'll append to capturedOutput */
+let GLOBAL_STEP = 0;
+let capturedLines = [];
+function printStep(bracketName, updated) {
+  GLOBAL_STEP += 1;
+  capturedLines.push(`  (${GLOBAL_STEP}) Resolved ${bracketName}: ${updated}`);
+}
+
+/* find and solve innermost bracket pair of a type (open_c, close_c)
+   returns [newExpr, updatedBool] or if error returns ["ERROR..."]
+*/
+function findAndSolveInnermost(expr, open_c, close_c, name, solveExpressionFn) {
+  // Pattern: open_c, content without open_c or close_c, close_c
+  const openRe = open_c.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const closeRe = close_c.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const pattern = new RegExp(openRe + '([^' + openRe + closeRe + ']+)' + closeRe);
+  const m = expr.match(pattern);
+  if (!m) return [expr, false];
+  const inner = m[1];
+  const full = m[0];
+  const solved = solveExpressionFn(inner, false, true);
+  if (typeof solved === 'string' && solved.startsWith('ERROR')) return [solved, true];
+  const newExpr = expr.replace(full, String(solved));
+  if (GLOBAL_STEP >= 0) printStep(name, newExpr);
+  return [newExpr, true];
+}
+
+/* parse linear: returns [a (Fraction), b (Fraction)] for expr like "2x-5+x" */
+function parseLinear(expr) {
+  expr = expr.replace(/\s+/g,'');
+  // replace standalone x with 1x (but careful with decimals)
+  expr = expr.replace(/(?<![\d.])x/g, '1x');
+  expr = expr.replace(/-/g, '+-');
+  const parts = expr.split('+');
+  let a = new Fraction(0,1), b = new Fraction(0,1);
+  for (const p of parts) {
+    if (!p) continue;
+    if (p.includes('x')) {
+      let coef = p.replace(/x/g, '');
+      if (coef === '' || coef === '+') coef = '1';
+      else if (coef === '-') coef = '-1';
+      // convert coef to Fraction
+      if (coef.includes('/')) {
+        const [nn,dd] = coef.split('/'); a = a.add(new Fraction(parseInt(nn), parseInt(dd)));
+      } else {
+        a = a.add(new Fraction(parseFloat(coef) * 1, 1).limitDenominator(1000000));
+      }
+    } else {
+      // constant
+      if (p.includes('/')) {
+        const [nn,dd] = p.split('/'); b = b.add(new Fraction(parseInt(nn), parseInt(dd)));
+      } else if (p === '') continue;
+      else b = b.add(new Fraction(parseFloat(p) * 1, 1).limitDenominator(1000000));
+    }
+  }
+  return [a, b];
+}
+
+/* solve linear equation left and right (strings) */
+function solveEquation(left, right, RETURN_FRACTION) {
+  const [a1,b1] = parseLinear(left);
+  const [a2,b2] = parseLinear(right);
+  const A = a1.sub(a2);
+  const B = b2.sub(b1);
+  // A x = B
+  if (A.n === 0) {
+    if (B.n === 0) return "All real numbers satisfy the equation";
+    return "No solution";
+  }
+  let x = B.div(A); // Fraction
+  if (RETURN_FRACTION) x = x.limitDenominator(1000000);
+  else x = x.valueOf();
+  return `x = ${x}`;
+}
+
+/* calculate_standard_expression: numeric-only evaluation; returns Fraction or float or null */
+function calculateStandardExpression(expr, RETURN_FRACTION) {
+  expr = expr.replace(/\s+/g,'');
+  if (!/^[0-9+\-*/.]+$/.test(expr)) return null;
+  const v = sanitizeAndEvalNumeric(expr);
+  if (v === null) return null;
+  if (RETURN_FRACTION) return Fraction.fromFloat(v, 1000000).limitDenominator(1000000);
+  return v;
+}
+
+/* Main solveExpression port */
+function solveExpression(exprStr, printSteps=true, _is_recursive_call=false, context) {
+  // context: {RETURN_FRACTION, _CURRENT_VARIABLE_ASSIGNMENTS}
+  let RETURN_FRACTION = context.RETURN_FRACTION;
+  let _CURRENT_VARIABLE_ASSIGNMENTS = context._CURRENT_VARIABLE_ASSIGNMENTS;
+
+  let expr = convertMixedNumbers(exprStr).replace(/\s+/g,'');
+  // Apply variable assignments on top-level call
+  if (!_is_recursive_call && Object.keys(_CURRENT_VARIABLE_ASSIGNMENTS).length > 0) {
+    const originalExpr = expr;
+    let substitutedExpr = expr;
+    // sort assignments by var name length desc
+    const sorted = Object.entries(_CURRENT_VARIABLE_ASSIGNMENTS).sort((a,b)=>b[0].length - a[0].length);
+    for (const [varName, varVal] of sorted) {
+      const valStr = String(varVal);
+      // handle 2var -> 2*(val)
+      substitutedExpr = substitutedExpr.replace(new RegExp('(?P<coef>\\b\\d+(?:\\.\\d+)?)' + varName + '\\b','g'), (m, p1) => p1 + '*(' + valStr + ')');
+      // handle standalone var
+      substitutedExpr = substitutedExpr.replace(new RegExp('\\b' + varName + '\\b','g'), '(' + valStr + ')');
+    }
+    if (substitutedExpr !== originalExpr && printSteps) {
+      capturedLines.push(`  (Auto) Substituted variables: ${originalExpr} -> ${substitutedExpr}`);
+    }
+    expr = substitutedExpr;
+  }
+
+  // Disable step printing if no brackets and no percentages
+  if (printSteps && !/[()\[\]{}]/.test(expr) && !/\d+%/.test(expr)) printSteps = false;
+  GLOBAL_STEP = printSteps ? 0 : -1;
+
+  // Check equation
+  const eq = splitTopLevelEquation(expr);
+  if (eq !== null) {
+    const [L,R] = eq;
+    const LS = solveExpression(L, false, true, context);
+    const RS = solveExpression(R, false, true, context);
+    if (typeof LS === 'string' && LS.startsWith('ERROR')) return LS;
+    if (typeof RS === 'string' && RS.startsWith('ERROR')) return RS;
+    return solveEquation(String(LS), String(RS), RETURN_FRACTION);
+  }
+
+  if (printSteps) capturedLines.push("\n--- Start Iterative Bracket/Percentage Resolution ---");
+  const precedence = [
+    ['{','}','Curly Braces {}'],
+    ['[',']','Square Brackets []'],
+    ['(',')','Parentheses ()']
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [o,c,n] of precedence) {
+      const res = findAndSolveInnermost(expr, o, c, n, (inner, ps=false, rec=true) => solveExpression(inner, ps, rec, context));
+      if (typeof res[0] === 'string' && res[0].startsWith('ERROR')) return res[0];
+      expr = res[0];
+      if (res[1]) { changed = true; break; }
+    }
+    if (!changed) {
+      const [newExpr, updated] = convertPercentagesInExpr(expr);
+      if (updated) {
+        if (GLOBAL_STEP >= 0) printStep("Percentage Conversion", newExpr);
+        expr = newExpr;
+        changed = true;
+      }
+    }
+  }
+
+  if (printSteps) {
+    capturedLines.push("--- Finished Bracket/Percentage Resolution ---");
+    capturedLines.push("\n--- Final Calculation ---");
+  }
+
+  // If 'x' remains, try to parse linear
+  if (expr.includes('x')) {
+    try {
+      const [a,b] = parseLinear(expr);
+      let A=a, B=b;
+      let aOut, bOut;
+      if (RETURN_FRACTION) {
+        aOut = A.limitDenominator(1000000);
+        bOut = B.limitDenominator(1000000);
+      } else {
+        aOut = A.valueOf();
+        bOut = B.valueOf();
+      }
+      let ax = "";
+      if (A.eq(new Fraction(1,1))) ax = "x";
+      else if (A.eq(new Fraction(-1,1))) ax = "-x";
+      else if (!(A.n === 0)) ax = `${A.toString()}x`;
+      let bs = "";
+      if (B.valueOf() > 0) bs = `+${B.toString()}`;
+      else if (B.valueOf() < 0) bs = `${B.toString()}`;
+      if (ax && bs) return `${ax}${bs}`;
+      else if (ax) return ax;
+      else if (B.n !== 0) return B.toString();
+      else if (B.n === 0) return "0";
+      else return expr;
+    } catch(e){
+      return expr;
+    }
+  }
+
+  // numeric expression
+  const numeric = calculateStandardExpression(expr, context.RETURN_FRACTION);
+  if (numeric === null) return `ERROR: Invalid numeric expression '${expr}'`;
+  return numeric;
+}
+
+/* ============ runCalculator (mimic Python run_calculator) ============ */
+function runCalculator(mode, expressionLines) {
+  // mode: 'fraction' or 'float'
+  const RETURN_FRACTION = !(mode === 'float' || mode === 'f');
+  const _CURRENT_VARIABLE_ASSIGNMENTS = {}; // variable -> fraction or float string
+  const oldCaptured = capturedLines;
+  capturedLines = [];
+  GLOBAL_STEP = 0;
+
+  capturedLines.push(RETURN_FRACTION ? "Output mode set to FRACTION." : "Output mode set to FLOAT.");
+  capturedLines.push("\n" + "=".repeat(40) + "\n");
+
+  for (const raw of expressionLines) {
+    if (!raw || !raw.trim()) {
+      capturedLines.push("Skipped empty line.");
+      capturedLines.push("\n" + "-".repeat(40) + "\n");
+      continue;
+    }
+    // reset assignments for each new expression line (same as Python)
+    Object.keys(_CURRENT_VARIABLE_ASSIGNMENTS).forEach(k => delete _CURRENT_VARIABLE_ASSIGNMENTS[k]);
+    let expression_to_solve = "";
+    try {
+      const parts = raw.split(';').map(p => p.trim()).filter(Boolean);
+      let is_equation_for_x = false;
+
+      for (let i=0;i<parts.length;i++){
+        const part = parts[i];
+        const match = part.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=(.*)/);
+        if (match) {
+          const var_name = match[1];
+          let value_expr_str = match[2].trim();
+          // substitute already defined variables
+          const sortedCurrentAssignments = Object.entries(_CURRENT_VARIABLE_ASSIGNMENTS).sort((a,b)=>b[0].length - a[0].length);
+          for (const [existing_var, existing_val] of sortedCurrentAssignments) {
+            const existing_val_str = String(existing_val);
+            value_expr_str = value_expr_str.replace(new RegExp('(?P<coef>\\b\\d+(?:\\.\\d+)?)' + existing_var + '\\b','g'), (m, p1) => p1 + '*(' + existing_val_str + ')');
+            value_expr_str = value_expr_str.replace(new RegExp('\\b' + existing_var + '\\b','g'), '(' + existing_val_str + ')');
+          }
+          // solve assignment expression
+          const solved_value = solveExpression(value_expr_str, false, true, {RETURN_FRACTION, _CURRENT_VARIABLE_ASSIGNMENTS});
+          if (typeof solved_value === 'string' && solved_value.startsWith('ERROR')) {
+            capturedLines.push(`\nERROR in assignment for ${var_name}: ${solved_value}`);
+            throw new Error(`Invalid assignment for ${var_name}`);
+          } else if (typeof solved_value === 'string' && solved_value.includes('x') && var_name === 'x') {
+            expression_to_solve = part; is_equation_for_x = true; break;
+          } else if (typeof solved_value === 'string' && solved_value.includes('x')) {
+            capturedLines.push(`\nERROR: Variable '${var_name}' assignment '${value_expr_str}' resolved to '${solved_value}', which still contains 'x'. Only 'x' can be implicitly defined via equation.`);
+            throw new Error(`Invalid assignment for ${var_name}`);
+          } else if (solved_value === null) {
+            capturedLines.push(`\nERROR: Invalid assignment for ${var_name}: '${value_expr_str}' did not resolve to a numeric value.`);
+            throw new Error(`Invalid assignment for ${var_name}`);
+          } else {
+            // store the solved value; convert to Fraction or string similar to Python representation
+            let stored;
+            if (typeof solved_value === 'number') {
+              stored = RETURN_FRACTION ? Fraction.fromFloat(solved_value,1000000).limitDenominator(1000000) : solved_value;
+            } else if (solved_value instanceof Fraction) stored = solved_value;
+            else {
+              // it might be a string e.g. "5/2" or expression
+              // try to parse as fraction-like
+              if (typeof solved_value === 'string' && solved_value.includes('/')) {
+                const sp = solved_value.split('/'); stored = new Fraction(parseInt(sp[0]), parseInt(sp[1]));
+              } else if (typeof solved_value === 'string' && !isNaN(Number(solved_value))) {
+                stored = RETURN_FRACTION ? Fraction.fromFloat(Number(solved_value),1000000).limitDenominator(1000000) : Number(solved_value);
+              } else stored = solved_value;
+            }
+            _CURRENT_VARIABLE_ASSIGNMENTS[var_name] = stored;
+            capturedLines.push(`\nAssigned: ${var_name} = ${stored}`);
+          }
+        } else {
+          expression_to_solve = part.replace(/\?$/,'');
+          if (i === parts.length - 1 || part.includes('=')) break;
+          else expression_to_solve = "";
+        }
+      }
+
+      if (!is_equation_for_x && !expression_to_solve && parts.length) {
+        if (Object.keys(_CURRENT_VARIABLE_ASSIGNMENTS).length > 0) {
+          capturedLines.push("\nNo explicit expression to evaluate. Final assignments:");
+          for (const [v, val] of Object.entries(_CURRENT_VARIABLE_ASSIGNMENTS)) {
+            capturedLines.push(`  ${v} = ${val}`);
+          }
+        } else {
+          capturedLines.push(`ERROR: Could not parse expression or assignments: '${raw}'`);
+        }
+      } else if (!parts.length) {
+        continue;
+      } else {
+        capturedLines.push(`\nProcessing: ${expression_to_solve}`);
+        const result = solveExpression(expression_to_solve, true, false, {RETURN_FRACTION, _CURRENT_VARIABLE_ASSIGNMENTS});
+        capturedLines.push("\n" + "=".repeat(40));
+        capturedLines.push("RESULT: " + result);
+        capturedLines.push("".padEnd(40, '='));
+      }
+    } catch(e) {
+      capturedLines.push(`\nAN ERROR OCCURRED: ${e.message || e}`);
+      capturedLines.push("".padEnd(40, '='));
+    }
+    capturedLines.push("\n" + "-".repeat(40) + "\n");
+  }
+
+  const out = capturedLines.join('\n');
+  // restore
+  capturedLines = oldCaptured || [];
+  GLOBAL_STEP = 0;
+  return out;
+}
+
+/* ============ DOM wiring ============ */
+document.getElementById('runBtn').addEventListener('click', () => {
+  const inputsRaw = document.getElementById('inputs').value;
+  const lines = inputsRaw.split(/\r?\n/).map(l=>l.trim()).filter(()=>true); // keep empty lines to mimic Python behavior
+  const mode = document.getElementById('modeFloat').checked ? 'float' : 'fraction';
+  const output = runCalculator(mode, lines);
+  document.getElementById('outputArea').textContent = output;
+});
+
+document.getElementById('clearBtn').addEventListener('click', ()=> {
+  document.getElementById('outputArea').textContent = '(results will appear here)';
+});
+
+/* Optional: run initial example */
+document.getElementById('runBtn').click();
+
+</script>
+</body>
+</html>
